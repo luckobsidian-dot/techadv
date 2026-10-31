@@ -6,52 +6,76 @@ on:
   push:
     branches: [main]
 
-env:
-  GODOT_VERSION: "4.3"
-
 jobs:
   android:
     runs-on: ubuntu-24.04
-
     container:
       image: barichello/godot-ci:4.3
+
+    env:
+      ANDROID_HOME: /usr/lib/android-sdk
 
     steps:
       - name: Checkout project
         uses: actions/checkout@v4
 
-      - name: Set up Godot
+      - name: Set up Godot 4.3
+        shell: bash
         run: |
-          mkdir -p "$HOME/.local/share/godot/export_templates"
-          mkdir -p "$HOME/.config/godot"
+          set -e
+          mkdir -p "$HOME/.local/share/godot/export_templates" "$HOME/.config/godot"
 
-          cp -a "/root/.local/share/godot/export_templates/${GODOT_VERSION}.stable" "$HOME/.local/share/godot/export_templates/"
+          cp -a /root/.local/share/godot/export_templates/4.3.stable "$HOME/.local/share/godot/export_templates/"
 
-          cp -a /root/.config/godot/. "$HOME/.config/godot/"
+          cat > "$HOME/.config/godot/editor_settings-4.3.tres" <<'EOS'
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/java_sdk_path = "/usr/lib/jvm/java-17-openjdk-amd64"
+          export/android/android_sdk_path = "/usr/lib/android-sdk"
+          export/android/debug_keystore = "/root/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOS
 
           test -f /root/debug.keystore
-
-          echo "Godot setup complete!"
           godot --version
 
-      - name: Check project
+      - name: Install Android SDK 34
+        shell: bash
         run: |
+          set -e
+          sdkmanager --sdk_root="$ANDROID_HOME" "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+          test -f "$ANDROID_HOME/build-tools/34.0.0/apksigner"
+
+      - name: Fix Android export settings
+        shell: bash
+        run: |
+          set -e
           test -f project.godot
           test -f export_presets.cfg
-          echo "Project files found!"
+          grep -q '^\[rendering\]$' project.godot
 
-      - name: Import project
+          if grep -q '^textures/vram_compression/import_etc2_astc=' project.godot; then
+            sed -i 's|^textures/vram_compression/import_etc2_astc=.*|textures/vram_compression/import_etc2_astc=true|' project.godot
+          else
+            sed -i '/^\[rendering\]$/a textures/vram_compression/import_etc2_astc=true' project.godot
+          fi
+
+          grep -q '^textures/vram_compression/import_etc2_astc=true$' project.godot
+
+      - name: Import Godot project
+        shell: bash
         run: |
           godot --headless --path . --import
 
-      - name: Export Android APK
-        env:
-          GODOT_ANDROID_KEYSTORE_DEBUG_PATH: /root/debug.keystore
-          GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
-          GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
+      - name: Export APK
+        shell: bash
         run: |
+          set -e
           mkdir -p build
           godot --headless --path . --verbose --export-debug "Android" build/techadv.apk
+          test -s build/techadv.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
